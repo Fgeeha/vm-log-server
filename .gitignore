@@ -1,0 +1,28 @@
+# Зависимости
+node_modules/
+
+# Конфигурация с секретами — НИКОГДА не коммитить .env
+.env
+.env.local
+.env.*.local
+
+# Логи
+logs/
+*.log
+npm-debug.log*
+
+# Временные файлы
+*.csv
+!example/
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+desktop.ini
