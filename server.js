@@ -312,6 +312,19 @@ app.get('/api/events', auth, (req, res) => {
       }
       const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
       const total = db.prepare(`SELECT COUNT(*) AS c FROM events ${whereSql}`).get(params).c;
+      const summary = db.prepare(`
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN (
+            lower(coalesce(event,'')) LIKE '%удал%' OR
+            lower(coalesce(event,'')) LIKE '%delet%' OR
+            lower(coalesce(event,'')) LIKE '%remove%'
+          ) THEN 1 ELSE 0 END) AS deletes,
+          COUNT(DISTINCT CASE WHEN coalesce(ip,'') != '' THEN ip END) AS uniqueIps,
+          COUNT(DISTINCT CASE WHEN coalesce(user,'') != '' THEN user END) AS uniqueUsers
+        FROM events
+        ${whereSql}
+      `).get(params);
       const orderSql = `ORDER BY ${sortCol} ${sortDir}, id DESC`;
       const rows = db.prepare(`
         SELECT id, journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt
@@ -320,7 +333,17 @@ app.get('/api/events', auth, (req, res) => {
         ${orderSql}
         LIMIT @limit OFFSET @offset
       `).all({ ...params, limit, offset });
-      return res.json({ total, returned: rows.length, events: rows });
+      return res.json({
+        total,
+        returned: rows.length,
+        events: rows,
+        summary: {
+          total: Number(summary.total || 0),
+          deletes: Number(summary.deletes || 0),
+          uniqueIps: Number(summary.uniqueIps || 0),
+          uniqueUsers: Number(summary.uniqueUsers || 0),
+        },
+      });
     } catch (err) {
       log('error', `API /events (db): ${err.message}`);
       return res.status(500).json({ error: 'DB query failed' });
@@ -335,11 +358,16 @@ app.get('/api/events', auth, (req, res) => {
   if (from)  r = r.filter(e => e.time  >= from);
   if (to)    r = r.filter(e => e.time  <= to);
   if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  const filtered = r;
+  const normDelete = ev => {
+    const e = String(ev || '').toLowerCase();
+    return e.includes('удал') || e.includes('delet') || e.includes('remove');
+  };
   const getField = (obj, field) => {
     const v = obj[field];
     return v == null ? '' : String(v);
   };
-  r.sort((a, b) => {
+  filtered.sort((a, b) => {
     let av = getField(a, sortCol);
     let bv = getField(b, sortCol);
     if (sortCol === 'id') {
@@ -368,9 +396,15 @@ app.get('/api/events', auth, (req, res) => {
     if (av > bv) return sortDir === 'ASC' ? 1 : -1;
     return Number(b.id || 0) - Number(a.id || 0);
   });
-  const total = r.length;
-  r = r.slice(offset, offset + limit);
-  res.json({ total, returned: r.length, events: r });
+  const total = filtered.length;
+  const summary = {
+    total,
+    deletes: filtered.filter(e => normDelete(e.event)).length,
+    uniqueIps: new Set(filtered.map(e => e.ip).filter(Boolean)).size,
+    uniqueUsers: new Set(filtered.map(e => e.user).filter(Boolean)).size,
+  };
+  const rows = filtered.slice(offset, offset + limit);
+  res.json({ total, returned: rows.length, events: rows, summary });
 });
 
 app.get('/api/filters', auth, (req, res) => {

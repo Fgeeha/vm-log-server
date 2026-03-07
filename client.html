@@ -388,6 +388,7 @@ let newRowIds = new Set();
 let totalRows = 0;
 let initialLoaded = false;
 let filtersLoaded = false;
+let summaryStats = { total: 0, deletes: 0, uniqueIps: 0, uniqueUsers: 0 };
 
 function defaultWsUrl() {
   if (location.host) {
@@ -546,14 +547,11 @@ function splitLine(line,d) {
 
 // ─── Refresh ──────────────────────────────────────────────────────────────────
 function updateSummaryFromData() {
-  const deletes = allData.filter(r=>normalizeEvent(r.event)==='delete').length;
-  const ips     = new Set(allData.map(r=>r.ip).filter(Boolean)).size;
-  const users   = new Set(allData.map(r=>r.user).filter(Boolean)).size;
-  document.getElementById('cTotal').textContent  = totalRows.toLocaleString('ru');
-  document.getElementById('cDelete').textContent = deletes.toLocaleString('ru');
-  document.getElementById('cIp').textContent     = ips;
-  document.getElementById('cUsers').textContent  = users;
-  document.getElementById('hDelete').textContent = deletes + ' удалений';
+  document.getElementById('cTotal').textContent  = Number(summaryStats.total || totalRows).toLocaleString('ru');
+  document.getElementById('cDelete').textContent = Number(summaryStats.deletes || 0).toLocaleString('ru');
+  document.getElementById('cIp').textContent     = Number(summaryStats.uniqueIps || 0);
+  document.getElementById('cUsers').textContent  = Number(summaryStats.uniqueUsers || 0);
+  document.getElementById('hDelete').textContent = Number(summaryStats.deletes || 0) + ' удалений';
   const sources = [...new Set(allData.map(r=>r.source).filter(Boolean))].join(', ');
   document.getElementById('cSrc').textContent = sources || '—';
 }
@@ -621,6 +619,7 @@ async function loadPage(page = 1) {
     currentPage = p;
     totalRows = Number(data.total || 0);
     allData = data.events || [];
+    summaryStats = data.summary || { total: totalRows, deletes: 0, uniqueIps: 0, uniqueUsers: 0 };
     document.getElementById('shownCount').textContent = allData.length.toLocaleString('ru');
     document.getElementById('totalCount').textContent = totalRows.toLocaleString('ru');
     updateSummaryFromData();
