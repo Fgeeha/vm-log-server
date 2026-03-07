@@ -103,6 +103,16 @@ function makeDedupeKey(ev) {
   ].join('|');
 }
 
+function normalizeForSearch(value) {
+  return String(value || '').normalize('NFKC').toLocaleLowerCase('ru-RU');
+}
+
+function includesNormalized(haystack, needle) {
+  const q = normalizeForSearch(needle).trim();
+  if (!q) return true;
+  return normalizeForSearch(haystack).includes(q);
+}
+
 function initDatabase() {
   if (!CONFIG.dbEnabled) {
     log('info', 'SQLite отключен (DB_ENABLED=false), работаем только в памяти');
@@ -117,6 +127,9 @@ function initDatabase() {
     const absDbPath = path.resolve(CONFIG.dbPath);
     fs.mkdirSync(path.dirname(absDbPath), { recursive: true });
     db = new Database(absDbPath);
+    db.function('icontains', { deterministic: true }, (value, query) =>
+      includesNormalized(value, query) ? 1 : 0
+    );
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     db.exec(`
@@ -357,19 +370,19 @@ app.get('/api/events', auth, (req, res) => {
       if (to) { where.push('receivedAt <= @to'); params.to = to; }
       if (q) {
         where.push(`(
-          lower(coalesce(journal,'')) LIKE @q OR
-          lower(coalesce(time,'')) LIKE @q OR
-          lower(coalesce(ip,'')) LIKE @q OR
-          lower(coalesce(user,'')) LIKE @q OR
-          lower(coalesce(event,'')) LIKE @q OR
-          lower(coalesce(filetype,'')) LIKE @q OR
-          lower(coalesce(size,'')) LIKE @q OR
-          lower(coalesce(path,'')) LIKE @q OR
-          lower(coalesce(source,'')) LIKE @q OR
-          lower(coalesce(receivedAt,'')) LIKE @q OR
-          lower(coalesce(raw,'')) LIKE @q
+          icontains(journal, @q) = 1 OR
+          icontains(time, @q) = 1 OR
+          icontains(ip, @q) = 1 OR
+          icontains(user, @q) = 1 OR
+          icontains(event, @q) = 1 OR
+          icontains(filetype, @q) = 1 OR
+          icontains(size, @q) = 1 OR
+          icontains(path, @q) = 1 OR
+          icontains(source, @q) = 1 OR
+          icontains(receivedAt, @q) = 1 OR
+          icontains(raw, @q) = 1
         )`);
-        params.q = `%${String(q).toLowerCase()}%`;
+        params.q = String(q);
       }
       const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
       const total = db.prepare(`SELECT COUNT(*) AS c FROM events ${whereSql}`).get(params).c;
@@ -430,7 +443,7 @@ app.get('/api/events', auth, (req, res) => {
     const toTs = ts(to);
     r = r.filter(e => ts(e.receivedAt || e.time) <= toTs);
   }
-  if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  if (q)     r = r.filter(e => includesNormalized(JSON.stringify(e), q));
   const filtered = r;
   const normDelete = ev => {
     const e = String(ev || '').toLowerCase();
@@ -521,19 +534,19 @@ app.get('/api/distinct-values', auth, (req, res) => {
       if (to) { where.push('receivedAt <= @to'); params.to = to; }
       if (q) {
         where.push(`(
-          lower(coalesce(journal,'')) LIKE @q OR
-          lower(coalesce(time,'')) LIKE @q OR
-          lower(coalesce(ip,'')) LIKE @q OR
-          lower(coalesce(user,'')) LIKE @q OR
-          lower(coalesce(event,'')) LIKE @q OR
-          lower(coalesce(filetype,'')) LIKE @q OR
-          lower(coalesce(size,'')) LIKE @q OR
-          lower(coalesce(path,'')) LIKE @q OR
-          lower(coalesce(source,'')) LIKE @q OR
-          lower(coalesce(receivedAt,'')) LIKE @q OR
-          lower(coalesce(raw,'')) LIKE @q
+          icontains(journal, @q) = 1 OR
+          icontains(time, @q) = 1 OR
+          icontains(ip, @q) = 1 OR
+          icontains(user, @q) = 1 OR
+          icontains(event, @q) = 1 OR
+          icontains(filetype, @q) = 1 OR
+          icontains(size, @q) = 1 OR
+          icontains(path, @q) = 1 OR
+          icontains(source, @q) = 1 OR
+          icontains(receivedAt, @q) = 1 OR
+          icontains(raw, @q) = 1
         )`);
-        params.q = `%${String(q).toLowerCase()}%`;
+        params.q = String(q);
       }
       where.push(`${col} != ''`);
       const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -564,7 +577,7 @@ app.get('/api/distinct-values', auth, (req, res) => {
     const toTs = Date.parse(String(to).replace(/\//g, '-')) || 0;
     r = r.filter(e => (Date.parse(String(e.receivedAt || e.time).replace(/\//g, '-')) || 0) <= toTs);
   }
-  if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  if (q)     r = r.filter(e => includesNormalized(JSON.stringify(e), q));
   const values = [...new Set(r.map(e => String(e[col] || '').trim()).filter(Boolean))].sort().slice(0, limit);
   res.json({ field: col, values });
 });
