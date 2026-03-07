@@ -265,16 +265,83 @@ app.get('/api/status', auth, (req, res) => res.json({
 }));
 
 app.get('/api/events', auth, (req, res) => {
+  const { user = '', event = '', ip = '', source = '', from = '', to = '', q = '' } = req.query;
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 500));
+  const offset = Math.max(0, Number(req.query.offset || 0));
+
+  if (db) {
+    try {
+      const where = [];
+      const params = {};
+      if (user) { where.push('user = @user'); params.user = user; }
+      if (event) { where.push('event = @event'); params.event = event; }
+      if (ip) { where.push('ip = @ip'); params.ip = ip; }
+      if (source) { where.push('source = @source'); params.source = source; }
+      if (from) { where.push('time >= @from'); params.from = from; }
+      if (to) { where.push('time <= @to'); params.to = to; }
+      if (q) {
+        where.push(`(
+          lower(coalesce(journal,'')) LIKE @q OR
+          lower(coalesce(time,'')) LIKE @q OR
+          lower(coalesce(ip,'')) LIKE @q OR
+          lower(coalesce(user,'')) LIKE @q OR
+          lower(coalesce(event,'')) LIKE @q OR
+          lower(coalesce(filetype,'')) LIKE @q OR
+          lower(coalesce(size,'')) LIKE @q OR
+          lower(coalesce(path,'')) LIKE @q OR
+          lower(coalesce(source,'')) LIKE @q OR
+          lower(coalesce(receivedAt,'')) LIKE @q OR
+          lower(coalesce(raw,'')) LIKE @q
+        )`);
+        params.q = `%${String(q).toLowerCase()}%`;
+      }
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM events ${whereSql}`).get(params).c;
+      const rows = db.prepare(`
+        SELECT id, journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt
+        FROM events
+        ${whereSql}
+        ORDER BY id DESC
+        LIMIT @limit OFFSET @offset
+      `).all({ ...params, limit, offset });
+      return res.json({ total, returned: rows.length, events: rows });
+    } catch (err) {
+      log('error', `API /events (db): ${err.message}`);
+      return res.status(500).json({ error: 'DB query failed' });
+    }
+  }
+
   let r = [...events];
-  const { user, event, ip, from, to, q, limit = 1000, offset = 0 } = req.query;
   if (user)  r = r.filter(e => e.user  === user);
   if (event) r = r.filter(e => e.event === event);
   if (ip)    r = r.filter(e => e.ip    === ip);
+  if (source) r = r.filter(e => e.source === source);
   if (from)  r = r.filter(e => e.time  >= from);
   if (to)    r = r.filter(e => e.time  <= to);
-  if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(q.toLowerCase()));
-  r = r.reverse().slice(Number(offset), Number(offset) + Number(limit));
-  res.json({ total: events.length, returned: r.length, events: r });
+  if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  const total = r.length;
+  r = r.reverse().slice(offset, offset + limit);
+  res.json({ total, returned: r.length, events: r });
+});
+
+app.get('/api/filters', auth, (req, res) => {
+  if (db) {
+    try {
+      const events = db.prepare(`SELECT DISTINCT event FROM events WHERE event != '' ORDER BY event ASC LIMIT 1000`).all().map(r => r.event);
+      const users = db.prepare(`SELECT DISTINCT user FROM events WHERE user != '' ORDER BY user ASC LIMIT 1000`).all().map(r => r.user);
+      const ips = db.prepare(`SELECT DISTINCT ip FROM events WHERE ip != '' ORDER BY ip ASC LIMIT 1000`).all().map(r => r.ip);
+      return res.json({ events, users, ips });
+    } catch (err) {
+      log('error', `API /filters (db): ${err.message}`);
+      return res.status(500).json({ error: 'DB query failed' });
+    }
+  }
+  const uniq = arr => [...new Set(arr.filter(Boolean))].sort();
+  res.json({
+    events: uniq(events.map(e => e.event)),
+    users: uniq(events.map(e => e.user)),
+    ips: uniq(events.map(e => e.ip)),
+  });
 });
 
 app.post('/api/upload-csv', auth, express.text({ type: '*/*', limit: '50mb' }), (req, res) => {

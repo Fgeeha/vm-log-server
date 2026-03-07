@@ -379,13 +379,15 @@ net use Z: \\192.168.1.100\logs
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
 let allData = [];
-let filteredData = [];
 let currentSort = { col: 'time', dir: -1 };
 let currentPage = 1;
 const PAGE_SIZE = 50;
 let ws = null;
 let autoScroll = true;
 let newRowIds = new Set();
+let totalRows = 0;
+let initialLoaded = false;
+let filtersLoaded = false;
 
 function defaultWsUrl() {
   if (location.host) {
@@ -393,6 +395,10 @@ function defaultWsUrl() {
     return `${proto}://${location.host}`;
   }
   return 'ws://localhost:3000';
+}
+
+function apiBaseUrl() {
+  return document.getElementById('wsUrl').value.trim().replace('ws://','http://').replace('wss://','https://');
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -420,16 +426,25 @@ function connectWS() {
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'snapshot') {
-      // Full load
-      allData = msg.data || [];
-      refreshAll();
+      if (!initialLoaded) {
+        initialLoaded = true;
+        loadFilterOptions();
+        loadPage(1);
+      }
     } else if (msg.type === 'event') {
-      // Single new event
-      const ev = msg.data;
-      newRowIds.add(ev.id);
-      allData.unshift(ev);
-      if (allData.length > 10000) allData.pop();
-      refreshAll(true);
+      const ev = msg.data || {};
+      if (currentPage === 1 && matchesActiveFilters(ev)) {
+        newRowIds.add(ev.id);
+        allData.unshift(ev);
+        if (allData.length > PAGE_SIZE) allData.pop();
+        totalRows += 1;
+        renderPage();
+        updateSummaryFromData();
+      } else if (matchesActiveFilters(ev)) {
+        totalRows += 1;
+        document.getElementById('totalCount').textContent = totalRows.toLocaleString('ru');
+        document.getElementById('cTotal').textContent = totalRows.toLocaleString('ru');
+      }
     } else if (msg.type === 'poll_update') {
       // Refresh timestamp
       document.getElementById('lastUpdateLabel').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
@@ -478,6 +493,8 @@ function handleFile(file) {
       }).then(r => r.json()).then(d => {
         document.getElementById('uploadResult').style.display = 'block';
         document.getElementById('uploadResult').textContent = `✓ Импортировано ${d.imported} событий через сервер`;
+        loadFilterOptions();
+        loadPage(1);
       }).catch(() => loadCSVLocally(e.target.result, file.name));
     } else {
       loadCSVLocally(e.target.result, file.name);
@@ -490,7 +507,9 @@ function loadCSVLocally(text, filename) {
   const parsed = parseCSV(text);
   parsed.forEach(e => { e.source = 'upload'; e.id = Math.random(); });
   allData = [...parsed, ...allData];
-  refreshAll();
+  totalRows = allData.length;
+  updateSummaryFromData();
+  renderPage();
   document.getElementById('uploadResult').style.display = 'block';
   document.getElementById('uploadResult').textContent = `✓ Загружено ${parsed.length} событий из ${filename}`;
   switchTab('events');
@@ -526,68 +545,101 @@ function splitLine(line,d) {
 }
 
 // ─── Refresh ──────────────────────────────────────────────────────────────────
-function refreshAll(keepPage = false) {
-  if (!keepPage) currentPage = 1;
-  populateFilters();
-  applyFilters();
-  updateSummaryFromData();
-}
-
 function updateSummaryFromData() {
-  const total   = allData.length;
   const deletes = allData.filter(r=>normalizeEvent(r.event)==='delete').length;
   const ips     = new Set(allData.map(r=>r.ip).filter(Boolean)).size;
   const users   = new Set(allData.map(r=>r.user).filter(Boolean)).size;
-  document.getElementById('cTotal').textContent  = total.toLocaleString('ru');
+  document.getElementById('cTotal').textContent  = totalRows.toLocaleString('ru');
   document.getElementById('cDelete').textContent = deletes.toLocaleString('ru');
   document.getElementById('cIp').textContent     = ips;
   document.getElementById('cUsers').textContent  = users;
-  document.getElementById('hTotal').textContent  = total.toLocaleString('ru') + ' событий';
   document.getElementById('hDelete').textContent = deletes + ' удалений';
   const sources = [...new Set(allData.map(r=>r.source).filter(Boolean))].join(', ');
   document.getElementById('cSrc').textContent = sources || '—';
 }
 
-function populateFilters() {
-  const cur = { ev: document.getElementById('filterEvent').value, u: document.getElementById('filterUser').value };
-  const events = [...new Set(allData.map(r=>r.event).filter(Boolean))].sort();
-  const users  = [...new Set(allData.map(r=>r.user).filter(Boolean))].sort();
-  document.getElementById('filterEvent').innerHTML = '<option value="">Все события</option>' + events.map(e=>`<option ${e===cur.ev?'selected':''}>${e}</option>`).join('');
-  document.getElementById('filterUser').innerHTML  = '<option value="">Все пользователи</option>' + users.map(u=>`<option ${u===cur.u?'selected':''}>${u}</option>`).join('');
+function activeFilters() {
+  return {
+    q: document.getElementById('searchInput').value.trim(),
+    event: document.getElementById('filterEvent').value.trim(),
+    user: document.getElementById('filterUser').value.trim(),
+    source: document.getElementById('filterSrc').value.trim(),
+  };
 }
 
-['searchInput','filterEvent','filterUser','filterSrc'].forEach(id =>
-  document.getElementById(id).addEventListener('input', () => { currentPage=1; applyFilters(); })
-);
+function matchesActiveFilters(ev) {
+  const f = activeFilters();
+  if (f.event && ev.event !== f.event) return false;
+  if (f.user && ev.user !== f.user) return false;
+  if (f.source && ev.source !== f.source) return false;
+  if (f.q) {
+    const h = [ev.ip,ev.user,ev.path,ev.event,ev.journal,ev.source].join(' ').toLowerCase();
+    if (!h.includes(f.q.toLowerCase())) return false;
+  }
+  return true;
+}
 
-function applyFilters() {
-  const q    = document.getElementById('searchInput').value.toLowerCase();
-  const ev   = document.getElementById('filterEvent').value;
-  const usr  = document.getElementById('filterUser').value;
-  const src  = document.getElementById('filterSrc').value;
-
-  filteredData = allData.filter(r => {
-    if (ev  && r.event  !== ev)  return false;
-    if (usr && r.user   !== usr) return false;
-    if (src && r.source !== src) return false;
-    if (q) {
-      const h = [r.ip,r.user,r.path,r.event,r.journal].join(' ').toLowerCase();
-      if (!h.includes(q)) return false;
-    }
-    return true;
-  });
-
-  filteredData.sort((a,b) => {
+function sortRows(rows) {
+  return [...rows].sort((a,b) => {
     let va = currentSort.col==='time' ? (parseTs(a.time)||0) : (a[currentSort.col]||'');
     let vb = currentSort.col==='time' ? (parseTs(b.time)||0) : (b[currentSort.col]||'');
     if (currentSort.col==='size') { va=sizeBytes(String(va)); vb=sizeBytes(String(vb)); }
     return va<vb ? -currentSort.dir : va>vb ? currentSort.dir : 0;
   });
-
-  document.getElementById('shownCount').textContent = filteredData.length.toLocaleString('ru');
-  document.getElementById('totalCount').textContent = allData.length.toLocaleString('ru');
-  renderPage();
 }
+
+async function loadFilterOptions() {
+  if (!(ws && ws.readyState === 1)) return;
+  try {
+    const base = apiBaseUrl();
+    const r = await fetch(`${base}/api/filters`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const evSel = document.getElementById('filterEvent');
+    const usrSel = document.getElementById('filterUser');
+    const curEv = evSel.value;
+    const curUsr = usrSel.value;
+    const events = (data.events || []).map(v => `<option ${v===curEv?'selected':''}>${v}</option>`).join('');
+    const users = (data.users || []).map(v => `<option ${v===curUsr?'selected':''}>${v}</option>`).join('');
+    evSel.innerHTML = `<option value="">Все события</option>${events}`;
+    usrSel.innerHTML = `<option value="">Все пользователи</option>${users}`;
+    filtersLoaded = true;
+  } catch (_) {}
+}
+
+async function loadPage(page = 1) {
+  if (!(ws && ws.readyState === 1)) return;
+  const p = Math.max(1, Number(page) || 1);
+  const f = activeFilters();
+  const params = new URLSearchParams({
+    limit: String(PAGE_SIZE),
+    offset: String((p - 1) * PAGE_SIZE),
+  });
+  if (f.q) params.set('q', f.q);
+  if (f.event) params.set('event', f.event);
+  if (f.user) params.set('user', f.user);
+  if (f.source) params.set('source', f.source);
+
+  try {
+    const base = apiBaseUrl();
+    const r = await fetch(`${base}/api/events?${params.toString()}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    currentPage = p;
+    totalRows = Number(data.total || 0);
+    allData = sortRows(data.events || []);
+    document.getElementById('shownCount').textContent = allData.length.toLocaleString('ru');
+    document.getElementById('totalCount').textContent = totalRows.toLocaleString('ru');
+    updateSummaryFromData();
+    renderPage();
+  } catch (err) {
+    console.error('Load page failed:', err);
+  }
+}
+
+['searchInput','filterEvent','filterUser','filterSrc'].forEach(id =>
+  document.getElementById(id).addEventListener('input', () => { currentPage=1; loadPage(1); })
+);
 
 function parseTs(s) { return s ? new Date(s.replace(/\//g,'-')).getTime()||0 : 0; }
 function sizeBytes(s) {
@@ -619,11 +671,10 @@ function srcBadge(s) {
 }
 
 function renderPage() {
-  const start = (currentPage-1)*PAGE_SIZE;
-  const page  = filteredData.slice(start, start+PAGE_SIZE);
+  const page  = allData;
   const tbody = document.getElementById('tableBody');
 
-  if (!filteredData.length) {
+  if (!page.length) {
     tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><span class="icon">🔍</span><p>Ничего не найдено</p></div></td></tr>`;
     document.getElementById('pagination').innerHTML = '';
     return;
@@ -653,7 +704,7 @@ function renderPage() {
 }
 
 function renderPagination() {
-  const total = Math.ceil(filteredData.length/PAGE_SIZE);
+  const total = Math.ceil(totalRows/PAGE_SIZE);
   if (total<=1) { document.getElementById('pagination').innerHTML=''; return; }
   let h = `<button class="page-btn" onclick="goPage(${currentPage-1})" ${currentPage===1?'disabled':''}>‹</button>`;
   for (let i=1;i<=total;i++) {
@@ -665,9 +716,9 @@ function renderPagination() {
 }
 
 function goPage(p) {
-  const total=Math.ceil(filteredData.length/PAGE_SIZE);
+  const total=Math.ceil(totalRows/PAGE_SIZE);
   if(p<1||p>total) return;
-  currentPage=p; renderPage();
+  loadPage(p);
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -677,13 +728,15 @@ function sortBy(col) {
   const th=document.getElementById('th-'+col);
   if(th){th.classList.add('sorted');th.textContent=th.textContent.replace(/ [↑↓↕]$/,'')+' '+(currentSort.dir===-1?'↓':'↑');}
   document.getElementById('sortInfo').textContent=col+' '+(currentSort.dir===-1?'↓':'↑');
-  currentPage=1; applyFilters();
+  allData = sortRows(allData);
+  renderPage();
 }
 
 function resetFilters() {
   ['searchInput'].forEach(id=>document.getElementById(id).value='');
   ['filterEvent','filterUser','filterSrc'].forEach(id=>document.getElementById(id).value='');
-  currentPage=1; applyFilters();
+  currentPage=1;
+  if (filtersLoaded) loadPage(1);
 }
 
 (function init() {
