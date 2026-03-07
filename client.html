@@ -210,7 +210,7 @@
 <!-- Connection bar -->
 <div class="connect-bar">
   <label>Сервер:</label>
-  <input type="text" id="wsUrl" value="ws://localhost:3000" placeholder="ws://192.168.1.xxx:3000">
+  <input type="text" id="wsUrl" value="" placeholder="ws://192.168.1.xxx:3000">
   <button class="btn btn-primary" onclick="connectWS()">Подключить</button>
   <button class="btn btn-outline" onclick="disconnectWS()">Отключить</button>
   <span class="ws-status disconnected" id="wsStatus">● Не подключён</span>
@@ -386,6 +386,14 @@ const PAGE_SIZE = 50;
 let ws = null;
 let autoScroll = true;
 let newRowIds = new Set();
+
+function defaultWsUrl() {
+  if (location.host) {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${location.host}`;
+  }
+  return 'ws://localhost:3000';
+}
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -678,6 +686,12 @@ function resetFilters() {
   ['filterEvent','filterUser','filterSrc'].forEach(id=>document.getElementById(id).value='');
   currentPage=1; applyFilters();
 }
+
+(function init() {
+  const wsInput = document.getElementById('wsUrl');
+  if (!wsInput.value.trim()) wsInput.value = defaultWsUrl();
+  connectWS();
+})();
 </script>
 </body>
 </html>

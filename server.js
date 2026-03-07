@@ -13,6 +13,8 @@ const path    = require('path');
 const http    = require('http');
 const express = require('express');
 const { WebSocketServer } = require('ws');
+let Database = null;
+try { Database = require('better-sqlite3'); } catch (_) {}
 
 const CONFIG = {
   synologyHost:    process.env.SYNOLOGY_HOST       || '192.168.1.100',
@@ -32,6 +34,8 @@ const CONFIG = {
   pollCsvPath:     process.env.NAS_CSV_PATH          || './logs/nas_log.csv',
   pollCsvEncoding: process.env.POLL_CSV_ENCODING     || 'utf8',
   maxEvents:       parseInt(process.env.MAX_EVENTS   || '10000'),
+  dbEnabled:       process.env.DB_ENABLED            !== 'false',
+  dbPath:          process.env.DB_PATH               || './data/events.db',
   logLevel:        process.env.LOG_LEVEL             || 'info',
   logFile:         process.env.LOG_FILE              || '',
 };
@@ -58,6 +62,7 @@ log('info', `║  NAS      : ${CONFIG.synologyHost}:${CONFIG.synologyPort}`);
 log('info', `║  Syslog   : ${CONFIG.syslogHost}:${CONFIG.syslogPort}`);
 log('info', `║  HTTP/WS  : http://localhost:${CONFIG.httpPort}`);
 log('info', `║  CSV Poll : ${CONFIG.pollCsvPath}`);
+log('info', `║  DB       : ${CONFIG.dbEnabled ? CONFIG.dbPath : 'disabled'}`);
 log('info', '╚══════════════════════════════════════════════════╝');
 
 if (!process.env.SYNOLOGY_PASSWORD) {
@@ -68,16 +73,129 @@ if (!process.env.SYNOLOGY_PASSWORD) {
 const events = [];
 let   eventIdCounter = 0;
 const stats = { total: 0, syslog: 0, csv: 0, lastUpdate: null };
+let db = null;
+let insertEventStmt = null;
+
+function initDatabase() {
+  if (!CONFIG.dbEnabled) {
+    log('info', 'SQLite отключен (DB_ENABLED=false), работаем только в памяти');
+    return;
+  }
+  if (!Database) {
+    log('warn', 'Модуль better-sqlite3 не установлен, работаем только в памяти');
+    log('warn', 'Установите зависимости: npm install');
+    return;
+  }
+  try {
+    const absDbPath = path.resolve(CONFIG.dbPath);
+    fs.mkdirSync(path.dirname(absDbPath), { recursive: true });
+    db = new Database(absDbPath);
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        journal TEXT,
+        time TEXT,
+        ip TEXT,
+        user TEXT,
+        event TEXT,
+        filetype TEXT,
+        size TEXT,
+        path TEXT,
+        source TEXT,
+        raw TEXT,
+        receivedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_received_at ON events(receivedAt);
+      CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
+    `);
+    insertEventStmt = db.prepare(`
+      INSERT INTO events (journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt)
+      VALUES (@journal, @time, @ip, @user, @event, @filetype, @size, @path, @source, @raw, @receivedAt)
+    `);
+    log('info', `SQLite подключена: ${absDbPath}`);
+  } catch (err) {
+    db = null;
+    insertEventStmt = null;
+    log('error', `SQLite init: ${err.message}`);
+  }
+}
+
+function loadRecentEventsFromDb() {
+  if (!db) return;
+  try {
+    const rows = db.prepare(`
+      SELECT id, journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt
+      FROM events
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(CONFIG.maxEvents);
+    rows.reverse();
+    for (const row of rows) {
+      events.push({
+        id: row.id,
+        journal: row.journal,
+        time: row.time,
+        ip: row.ip,
+        user: row.user,
+        event: row.event,
+        filetype: row.filetype,
+        size: row.size,
+        path: row.path,
+        source: row.source,
+        raw: row.raw,
+        receivedAt: row.receivedAt,
+      });
+      eventIdCounter = Math.max(eventIdCounter, row.id);
+      if (row.source === 'syslog') stats.syslog++;
+      if (row.source === 'csv' || row.source === 'upload') stats.csv++;
+    }
+    stats.total = events.length;
+    stats.lastUpdate = events.length ? events[events.length - 1].receivedAt : null;
+    if (events.length) log('info', `SQLite: восстановлено ${events.length} событий из БД`);
+  } catch (err) {
+    log('error', `SQLite load: ${err.message}`);
+  }
+}
 
 function addEvent(ev) {
-  ev.id         = ++eventIdCounter;
-  ev.receivedAt = new Date().toISOString();
+  const receivedAt = new Date().toISOString();
+  let eventId = ++eventIdCounter;
+
+  if (insertEventStmt) {
+    try {
+      const info = insertEventStmt.run({
+        journal: ev.journal || '',
+        time: ev.time || '',
+        ip: ev.ip || '',
+        user: ev.user || '',
+        event: ev.event || '',
+        filetype: ev.filetype || '',
+        size: ev.size || '',
+        path: ev.path || '',
+        source: ev.source || '',
+        raw: ev.raw || '',
+        receivedAt,
+      });
+      eventId = Number(info.lastInsertRowid);
+      eventIdCounter = Math.max(eventIdCounter, eventId);
+    } catch (err) {
+      log('error', `SQLite insert: ${err.message}`);
+    }
+  }
+
+  ev.id         = eventId;
+  ev.receivedAt = receivedAt;
   events.push(ev);
   if (events.length > CONFIG.maxEvents) events.shift();
   stats.total++;
   stats.lastUpdate = ev.receivedAt;
   broadcast({ type: 'event', data: ev });
 }
+
+initDatabase();
+loadRecentEventsFromDb();
 
 // ─── WEBSOCKET ───────────────────────────────────────────────────────────────
 const app    = express();

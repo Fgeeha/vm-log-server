@@ -18,11 +18,37 @@ node server.js
 | `NAS_CSV_PATH`  | `./nas_log.csv`     | Путь к CSV-файлу от Synology      |
 | `SYSLOG_PORT`   | `514`               | UDP порт для syslog               |
 | `HTTP_PORT`     | `3000`              | HTTP/WebSocket порт               |
+| `DB_ENABLED`    | `true`              | Включить сохранение в SQLite      |
+| `DB_PATH`       | `./data/events.db`  | Путь к файлу SQLite базы          |
 
 Пример:
 ```bash
-NAS_CSV_PATH=/mnt/nas/logs/audit.csv HTTP_PORT=8080 node server.js
+NAS_CSV_PATH=/mnt/nas/logs/audit.csv HTTP_PORT=8080 DB_PATH=./data/events.db node server.js
 ```
+
+---
+
+## Хранение данных в базе (SQLite)
+
+Сервер сохраняет события в SQLite и автоматически поднимает последние записи после перезапуска.
+
+1) Установите зависимости:
+```bash
+npm install
+```
+
+2) Укажите параметры в `.env`:
+```bash
+DB_ENABLED=true
+DB_PATH=./data/events.db
+```
+
+3) Запустите сервер:
+```bash
+node server.js
+```
+
+Если файла БД нет, он создастся автоматически.
 
 ---
 

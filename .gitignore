@@ -11,6 +11,12 @@ logs/
 *.log
 npm-debug.log*
 
+# SQLite база
+data/
+*.db
+*.db-wal
+*.db-shm
+
 # Временные файлы
 *.csv
 !example/

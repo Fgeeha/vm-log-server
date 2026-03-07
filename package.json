@@ -11,6 +11,7 @@
   "keywords": ["synology", "nas", "syslog", "smb", "log-viewer"],
   "license": "MIT",
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "chokidar": "^3.6.0",
     "dotenv":   "^16.4.5",
     "express":  "^4.18.3",
