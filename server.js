@@ -113,6 +113,20 @@ function includesNormalized(haystack, needle) {
   return normalizeForSearch(haystack).includes(q);
 }
 
+function parseTimestampMs(value) {
+  if (value == null) return 0;
+  const raw = String(value).trim();
+  if (!raw) return 0;
+  const normalized = raw.replace(/\//g, '-');
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function eventTimestampMs(eventTime, receivedAt) {
+  // Prefer original event time from source logs; fallback to ingestion time.
+  return parseTimestampMs(eventTime) || parseTimestampMs(receivedAt);
+}
+
 function initDatabase() {
   if (!CONFIG.dbEnabled) {
     log('info', 'SQLite отключен (DB_ENABLED=false), работаем только в памяти');
@@ -129,6 +143,9 @@ function initDatabase() {
     db = new Database(absDbPath);
     db.function('icontains', { deterministic: true }, (value, query) =>
       includesNormalized(value, query) ? 1 : 0
+    );
+    db.function('event_ts', { deterministic: true }, (timeValue, receivedAtValue) =>
+      eventTimestampMs(timeValue, receivedAtValue)
     );
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
@@ -366,8 +383,10 @@ app.get('/api/events', auth, (req, res) => {
       if (event) { where.push('event = @event'); params.event = event; }
       if (ip) { where.push('ip = @ip'); params.ip = ip; }
       if (source) { where.push('source = @source'); params.source = source; }
-      if (from) { where.push('receivedAt >= @from'); params.from = from; }
-      if (to) { where.push('receivedAt <= @to'); params.to = to; }
+      const fromTs = from ? parseTimestampMs(from) : 0;
+      const toTs = to ? parseTimestampMs(to) : 0;
+      if (from && fromTs) { where.push('event_ts(time, receivedAt) >= @fromTs'); params.fromTs = fromTs; }
+      if (to && toTs) { where.push('event_ts(time, receivedAt) <= @toTs'); params.toTs = toTs; }
       if (q) {
         where.push(`(
           icontains(journal, @q) = 1 OR
@@ -431,17 +450,14 @@ app.get('/api/events', auth, (req, res) => {
   if (event) r = r.filter(e => e.event === event);
   if (ip)    r = r.filter(e => e.ip    === ip);
   if (source) r = r.filter(e => e.source === source);
-  const ts = v => {
-    const n = Date.parse(String(v || '').replace(/\//g, '-'));
-    return Number.isFinite(n) ? n : 0;
-  };
+  const ts = (eventTime, receivedAt) => eventTimestampMs(eventTime, receivedAt);
   if (from) {
-    const fromTs = ts(from);
-    r = r.filter(e => ts(e.receivedAt || e.time) >= fromTs);
+    const fromTs = parseTimestampMs(from);
+    if (fromTs) r = r.filter(e => ts(e.time, e.receivedAt) >= fromTs);
   }
   if (to) {
-    const toTs = ts(to);
-    r = r.filter(e => ts(e.receivedAt || e.time) <= toTs);
+    const toTs = parseTimestampMs(to);
+    if (toTs) r = r.filter(e => ts(e.time, e.receivedAt) <= toTs);
   }
   if (q)     r = r.filter(e => includesNormalized(JSON.stringify(e), q));
   const filtered = r;
@@ -530,8 +546,10 @@ app.get('/api/distinct-values', auth, (req, res) => {
       if (event) { where.push('event = @event'); params.event = event; }
       if (ip) { where.push('ip = @ip'); params.ip = ip; }
       if (source) { where.push('source = @source'); params.source = source; }
-      if (from) { where.push('receivedAt >= @from'); params.from = from; }
-      if (to) { where.push('receivedAt <= @to'); params.to = to; }
+      const fromTs = from ? parseTimestampMs(from) : 0;
+      const toTs = to ? parseTimestampMs(to) : 0;
+      if (from && fromTs) { where.push('event_ts(time, receivedAt) >= @fromTs'); params.fromTs = fromTs; }
+      if (to && toTs) { where.push('event_ts(time, receivedAt) <= @toTs'); params.toTs = toTs; }
       if (q) {
         where.push(`(
           icontains(journal, @q) = 1 OR
@@ -570,12 +588,12 @@ app.get('/api/distinct-values', auth, (req, res) => {
   if (ip)    r = r.filter(e => e.ip === ip);
   if (source) r = r.filter(e => e.source === source);
   if (from) {
-    const fromTs = Date.parse(String(from).replace(/\//g, '-')) || 0;
-    r = r.filter(e => (Date.parse(String(e.receivedAt || e.time).replace(/\//g, '-')) || 0) >= fromTs);
+    const fromTs = parseTimestampMs(from);
+    if (fromTs) r = r.filter(e => eventTimestampMs(e.time, e.receivedAt) >= fromTs);
   }
   if (to) {
-    const toTs = Date.parse(String(to).replace(/\//g, '-')) || 0;
-    r = r.filter(e => (Date.parse(String(e.receivedAt || e.time).replace(/\//g, '-')) || 0) <= toTs);
+    const toTs = parseTimestampMs(to);
+    if (toTs) r = r.filter(e => eventTimestampMs(e.time, e.receivedAt) <= toTs);
   }
   if (q)     r = r.filter(e => includesNormalized(JSON.stringify(e), q));
   const values = [...new Set(r.map(e => String(e[col] || '').trim()).filter(Boolean))].sort().slice(0, limit);
