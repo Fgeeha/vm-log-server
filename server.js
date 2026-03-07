@@ -85,6 +85,24 @@ const stats = { total: 0, syslog: 0, csv: 0, lastUpdate: null };
 let db = null;
 let insertEventStmt = null;
 
+function makeDedupeKey(ev) {
+  const src = String(ev.source || '').toLowerCase();
+  if (src !== 'csv' && src !== 'upload') return null;
+  const norm = v => String(v || '').trim().toLowerCase();
+  return [
+    src,
+    norm(ev.journal),
+    norm(ev.time),
+    norm(ev.ip),
+    norm(ev.user),
+    norm(ev.event),
+    norm(ev.filetype),
+    norm(ev.size),
+    norm(ev.path),
+    norm(ev.raw),
+  ].join('|');
+}
+
 function initDatabase() {
   if (!CONFIG.dbEnabled) {
     log('info', 'SQLite отключен (DB_ENABLED=false), работаем только в памяти');
@@ -114,14 +132,53 @@ function initDatabase() {
         path TEXT,
         source TEXT,
         raw TEXT,
+        dedupeKey TEXT,
         receivedAt TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_received_at ON events(receivedAt);
       CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
     `);
+    const cols = db.prepare(`PRAGMA table_info(events)`).all().map(c => c.name);
+    if (!cols.includes('dedupeKey')) {
+      db.exec(`ALTER TABLE events ADD COLUMN dedupeKey TEXT`);
+    }
+    db.exec(`
+      UPDATE events
+      SET dedupeKey = lower(
+        coalesce(source,'') || '|' ||
+        coalesce(journal,'') || '|' ||
+        coalesce(time,'') || '|' ||
+        coalesce(ip,'') || '|' ||
+        coalesce(user,'') || '|' ||
+        coalesce(event,'') || '|' ||
+        coalesce(filetype,'') || '|' ||
+        coalesce(size,'') || '|' ||
+        coalesce(path,'') || '|' ||
+        coalesce(raw,'')
+      )
+      WHERE (source='csv' OR source='upload')
+        AND (dedupeKey IS NULL OR dedupeKey='');
+    `);
+    db.exec(`
+      DELETE FROM events
+      WHERE id IN (
+        SELECT e1.id
+        FROM events e1
+        JOIN events e2
+          ON e1.dedupeKey = e2.dedupeKey
+         AND e1.id > e2.id
+        WHERE e1.dedupeKey IS NOT NULL
+          AND e1.dedupeKey != ''
+      );
+    `);
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedupe
+      ON events(dedupeKey)
+      WHERE dedupeKey IS NOT NULL AND dedupeKey != '';
+    `);
     insertEventStmt = db.prepare(`
-      INSERT INTO events (journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt)
-      VALUES (@journal, @time, @ip, @user, @event, @filetype, @size, @path, @source, @raw, @receivedAt)
+      INSERT OR IGNORE INTO events (journal, time, ip, user, event, filetype, size, path, source, raw, dedupeKey, receivedAt)
+      VALUES (@journal, @time, @ip, @user, @event, @filetype, @size, @path, @source, @raw, @dedupeKey, @receivedAt)
     `);
     log('info', `SQLite подключена: ${absDbPath}`);
   } catch (err) {
@@ -171,6 +228,7 @@ function loadRecentEventsFromDb() {
 function addEvent(ev) {
   const receivedAt = new Date().toISOString();
   let eventId = ++eventIdCounter;
+  const dedupeKey = makeDedupeKey(ev);
 
   if (insertEventStmt) {
     try {
@@ -185,8 +243,10 @@ function addEvent(ev) {
         path: ev.path || '',
         source: ev.source || '',
         raw: ev.raw || '',
+        dedupeKey: dedupeKey || null,
         receivedAt,
       });
+      if (info.changes === 0) return false;
       eventId = Number(info.lastInsertRowid);
       eventIdCounter = Math.max(eventIdCounter, eventId);
     } catch (err) {
@@ -201,6 +261,7 @@ function addEvent(ev) {
   stats.total++;
   stats.lastUpdate = ev.receivedAt;
   broadcast({ type: 'event', data: ev });
+  return true;
 }
 
 initDatabase();
@@ -292,8 +353,8 @@ app.get('/api/events', auth, (req, res) => {
       if (event) { where.push('event = @event'); params.event = event; }
       if (ip) { where.push('ip = @ip'); params.ip = ip; }
       if (source) { where.push('source = @source'); params.source = source; }
-      if (from) { where.push('time >= @from'); params.from = from; }
-      if (to) { where.push('time <= @to'); params.to = to; }
+      if (from) { where.push('receivedAt >= @from'); params.from = from; }
+      if (to) { where.push('receivedAt <= @to'); params.to = to; }
       if (q) {
         where.push(`(
           lower(coalesce(journal,'')) LIKE @q OR
@@ -316,7 +377,9 @@ app.get('/api/events', auth, (req, res) => {
         SELECT
           COUNT(*) AS total,
           SUM(CASE WHEN (
-            lower(coalesce(event,'')) LIKE '%удал%' OR
+            coalesce(event,'') LIKE '%удал%' OR
+            coalesce(event,'') LIKE '%Удал%' OR
+            coalesce(event,'') LIKE '%УДАЛ%' OR
             lower(coalesce(event,'')) LIKE '%delet%' OR
             lower(coalesce(event,'')) LIKE '%remove%'
           ) THEN 1 ELSE 0 END) AS deletes,
@@ -355,8 +418,18 @@ app.get('/api/events', auth, (req, res) => {
   if (event) r = r.filter(e => e.event === event);
   if (ip)    r = r.filter(e => e.ip    === ip);
   if (source) r = r.filter(e => e.source === source);
-  if (from)  r = r.filter(e => e.time  >= from);
-  if (to)    r = r.filter(e => e.time  <= to);
+  const ts = v => {
+    const n = Date.parse(String(v || '').replace(/\//g, '-'));
+    return Number.isFinite(n) ? n : 0;
+  };
+  if (from) {
+    const fromTs = ts(from);
+    r = r.filter(e => ts(e.receivedAt || e.time) >= fromTs);
+  }
+  if (to) {
+    const toTs = ts(to);
+    r = r.filter(e => ts(e.receivedAt || e.time) <= toTs);
+  }
   if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
   const filtered = r;
   const normDelete = ev => {
@@ -427,12 +500,88 @@ app.get('/api/filters', auth, (req, res) => {
   });
 });
 
+app.get('/api/distinct-values', auth, (req, res) => {
+  const field = String(req.query.field || '');
+  const allowedFields = { ip: 'ip', user: 'user' };
+  const col = allowedFields[field];
+  if (!col) return res.status(400).json({ error: 'field must be ip or user' });
+
+  const { user = '', event = '', ip = '', source = '', from = '', to = '', q = '' } = req.query;
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 10000), 50000));
+
+  if (db) {
+    try {
+      const where = [];
+      const params = {};
+      if (user) { where.push('user = @user'); params.user = user; }
+      if (event) { where.push('event = @event'); params.event = event; }
+      if (ip) { where.push('ip = @ip'); params.ip = ip; }
+      if (source) { where.push('source = @source'); params.source = source; }
+      if (from) { where.push('receivedAt >= @from'); params.from = from; }
+      if (to) { where.push('receivedAt <= @to'); params.to = to; }
+      if (q) {
+        where.push(`(
+          lower(coalesce(journal,'')) LIKE @q OR
+          lower(coalesce(time,'')) LIKE @q OR
+          lower(coalesce(ip,'')) LIKE @q OR
+          lower(coalesce(user,'')) LIKE @q OR
+          lower(coalesce(event,'')) LIKE @q OR
+          lower(coalesce(filetype,'')) LIKE @q OR
+          lower(coalesce(size,'')) LIKE @q OR
+          lower(coalesce(path,'')) LIKE @q OR
+          lower(coalesce(source,'')) LIKE @q OR
+          lower(coalesce(receivedAt,'')) LIKE @q OR
+          lower(coalesce(raw,'')) LIKE @q
+        )`);
+        params.q = `%${String(q).toLowerCase()}%`;
+      }
+      where.push(`${col} != ''`);
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const rows = db.prepare(`
+        SELECT DISTINCT ${col} AS value
+        FROM events
+        ${whereSql}
+        ORDER BY ${col} ASC
+        LIMIT @limit
+      `).all({ ...params, limit });
+      return res.json({ field: col, values: rows.map(r => r.value) });
+    } catch (err) {
+      log('error', `API /distinct-values (db): ${err.message}`);
+      return res.status(500).json({ error: 'DB query failed' });
+    }
+  }
+
+  let r = [...events];
+  if (user)  r = r.filter(e => e.user === user);
+  if (event) r = r.filter(e => e.event === event);
+  if (ip)    r = r.filter(e => e.ip === ip);
+  if (source) r = r.filter(e => e.source === source);
+  if (from) {
+    const fromTs = Date.parse(String(from).replace(/\//g, '-')) || 0;
+    r = r.filter(e => (Date.parse(String(e.receivedAt || e.time).replace(/\//g, '-')) || 0) >= fromTs);
+  }
+  if (to) {
+    const toTs = Date.parse(String(to).replace(/\//g, '-')) || 0;
+    r = r.filter(e => (Date.parse(String(e.receivedAt || e.time).replace(/\//g, '-')) || 0) <= toTs);
+  }
+  if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  const values = [...new Set(r.map(e => String(e[col] || '').trim()).filter(Boolean))].sort().slice(0, limit);
+  res.json({ field: col, values });
+});
+
 app.post('/api/upload-csv', auth, express.text({ type: '*/*', limit: '50mb' }), (req, res) => {
   try {
     const parsed = parseCSV(req.body);
-    parsed.forEach(e => { e.source = 'upload'; addEvent(e); stats.csv++; });
-    log('info', `CSV upload: ${parsed.length} событий`);
-    res.json({ ok: true, imported: parsed.length });
+    let imported = 0;
+    parsed.forEach(e => {
+      e.source = 'upload';
+      if (addEvent(e)) {
+        stats.csv++;
+        imported++;
+      }
+    });
+    log('info', `CSV upload: ${imported} из ${parsed.length} событий (дубли пропущены)`);
+    res.json({ ok: true, imported, totalParsed: parsed.length });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
   }
@@ -494,9 +643,10 @@ udpServer.on('message', (msg, rinfo) => {
   try {
     const ev = parseSyslog(msg);
     if (!ev.ip) ev.ip = rinfo.address;
-    addEvent(ev);
-    stats.syslog++;
-    log('debug', `Syslog: ${rinfo.address} → ${ev.event} ${ev.user} ${ev.path}`);
+    if (addEvent(ev)) {
+      stats.syslog++;
+      log('debug', `Syslog: ${rinfo.address} → ${ev.event} ${ev.user} ${ev.path}`);
+    }
   } catch (err) {
     log('error', `Syslog parse: ${err.message}`);
   }
@@ -584,14 +734,26 @@ function pollCSV() {
     const lines = text.trim().split('\n');
     if (lastLineCount === 0) {
       const parsed = parseCSV(text);
-      parsed.forEach(e => { addEvent(e); stats.csv++; });
-      log('info', `Poll: загружено ${parsed.length} событий`);
+      let inserted = 0;
+      parsed.forEach(e => {
+        if (addEvent(e)) {
+          stats.csv++;
+          inserted++;
+        }
+      });
+      log('info', `Poll: загружено ${inserted} из ${parsed.length} событий (дубли пропущены)`);
     } else {
       const newL = lines.slice(lastLineCount);
       if (newL.length > 0) {
         const parsed = parseCSV([lines[0], ...newL].join('\n'));
-        parsed.forEach(e => { addEvent(e); stats.csv++; });
-        log('info', `Poll: +${parsed.length} новых событий`);
+        let inserted = 0;
+        parsed.forEach(e => {
+          if (addEvent(e)) {
+            stats.csv++;
+            inserted++;
+          }
+        });
+        log('info', `Poll: +${inserted} из ${parsed.length} новых событий`);
       }
     }
     lastLineCount = lines.length;

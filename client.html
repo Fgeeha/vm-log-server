@@ -86,6 +86,8 @@
     background:var(--surface); border:1px solid var(--border); border-radius:12px;
     padding:16px 18px; position:relative; overflow:hidden;
   }
+  .card.clickable { cursor:pointer; transition:transform .15s, border-color .2s; }
+  .card.clickable:hover { transform:translateY(-1px); border-color:var(--accent); }
   .card::after { content:''; position:absolute; top:0;left:0;right:0; height:2px; background:var(--card-accent,var(--accent)); }
   .card-label { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
   .card-value { font-size:26px; font-weight:700; font-family:var(--mono); line-height:1; }
@@ -103,6 +105,15 @@
   .search-wrap input { padding-left:38px; }
   input:focus, select:focus { border-color:var(--accent); }
   select option { background:var(--surface2); }
+  input[type="datetime-local"] {
+    background:var(--surface); border:1px solid var(--border); border-radius:9px;
+    color:var(--text); font-family:var(--mono); font-size:12px; padding:8px 10px; outline:none;
+  }
+  .time-filters {
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    margin:-4px 0 14px;
+  }
+  .time-filters label { font-size:12px; color:var(--muted); }
 
   /* Info bar */
   .info-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; font-size:12px; color:var(--muted); font-family:var(--mono); }
@@ -176,6 +187,47 @@
   .empty-state { text-align:center; padding:60px; color:var(--muted); }
   .empty-state .icon { font-size:40px; margin-bottom:12px; display:block; opacity:.3; }
 
+  /* Modal */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: rgba(10, 13, 20, .72);
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    width: min(760px, 96vw); max-height: 82vh;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: flex; flex-direction: column;
+  }
+  .modal-head {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-title { font-size: 14px; font-weight: 600; }
+  .modal-close {
+    width: 30px; height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent; color: var(--text);
+    cursor: pointer; font-size: 16px;
+  }
+  .modal-close:hover { border-color: var(--accent); color: var(--accent); }
+  .modal-body { padding: 12px 16px 16px; overflow: auto; }
+  .values-list { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+  .values-list li {
+    font-family: var(--mono); font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--surface2);
+    word-break: break-all;
+  }
+  .modal-empty { color: var(--muted); font-size: 12px; padding: 10px 2px; }
+
   ::-webkit-scrollbar { width:5px;height:5px; }
   ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
@@ -238,12 +290,12 @@
         <div class="card-value" id="cDelete">0</div>
         <div class="card-sub">критические операции</div>
       </div>
-      <div class="card" style="--card-accent:#22c55e">
+      <div class="card clickable" style="--card-accent:#22c55e" onclick="openValuesModal('ip')">
         <div class="card-label">Уникальных IP</div>
         <div class="card-value" id="cIp">0</div>
         <div class="card-sub">хостов</div>
       </div>
-      <div class="card" style="--card-accent:#f59e0b">
+      <div class="card clickable" style="--card-accent:#f59e0b" onclick="openValuesModal('user')">
         <div class="card-label">Пользователей</div>
         <div class="card-value" id="cUsers">0</div>
         <div class="card-sub">активных</div>
@@ -261,6 +313,20 @@
       <select id="filterUser"><option value="">Все пользователи</option></select>
       <select id="filterSrc"><option value="">Все источники</option><option value="syslog">Syslog</option><option value="csv">CSV poll</option><option value="upload">CSV upload</option></select>
       <button class="btn btn-outline" onclick="resetFilters()">↺ Сброс</button>
+    </div>
+    <div class="time-filters">
+      <label for="filterPeriod">Период:</label>
+      <select id="filterPeriod">
+        <option value="">Все время</option>
+        <option value="today">Сегодня</option>
+        <option value="24h">Последние 24 часа</option>
+        <option value="7d">Последние 7 дней</option>
+        <option value="custom">Свой интервал</option>
+      </select>
+      <label for="filterFrom">С:</label>
+      <input type="datetime-local" id="filterFrom">
+      <label for="filterTo">По:</label>
+      <input type="datetime-local" id="filterTo">
     </div>
 
     <div class="info-bar">
@@ -376,6 +442,19 @@ net use Z: \\192.168.1.100\logs
 </main>
 </div>
 
+<div class="modal-overlay" id="valuesModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title" id="valuesModalTitle">Список значений</div>
+      <button class="modal-close" type="button" onclick="closeValuesModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <ul class="values-list" id="valuesModalList"></ul>
+      <div class="modal-empty" id="valuesModalEmpty" style="display:none">Нет данных</div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ─── State ────────────────────────────────────────────────────────────────────
 let allData = [];
@@ -400,6 +479,82 @@ function defaultWsUrl() {
 
 function apiBaseUrl() {
   return document.getElementById('wsUrl').value.trim().replace('ws://','http://').replace('wss://','https://');
+}
+
+function toInputDateTimeValue(date) {
+  const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+}
+
+function inputToIso(id) {
+  const v = document.getElementById(id).value;
+  if (!v) return '';
+  const dt = new Date(v);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toISOString();
+}
+
+function applyPeriodPreset(value) {
+  const now = new Date();
+  const fromEl = document.getElementById('filterFrom');
+  const toEl = document.getElementById('filterTo');
+  if (value === '') {
+    fromEl.value = '';
+    toEl.value = '';
+    return;
+  }
+  if (value === 'custom') return;
+  let from = new Date(now);
+  if (value === 'today') {
+    from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  } else if (value === '24h') {
+    from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  } else if (value === '7d') {
+    from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+  fromEl.value = toInputDateTimeValue(from);
+  toEl.value = toInputDateTimeValue(now);
+}
+
+function openValuesModal(field) {
+  const titleEl = document.getElementById('valuesModalTitle');
+  const listEl = document.getElementById('valuesModalList');
+  const emptyEl = document.getElementById('valuesModalEmpty');
+  titleEl.textContent = field === 'ip' ? 'Уникальные IP по текущему фильтру' : 'Пользователи по текущему фильтру';
+  listEl.innerHTML = '';
+  emptyEl.style.display = 'none';
+  document.getElementById('valuesModal').classList.add('open');
+  loadDistinctValues(field);
+}
+
+function closeValuesModal() {
+  document.getElementById('valuesModal').classList.remove('open');
+}
+
+async function loadDistinctValues(field) {
+  const listEl = document.getElementById('valuesModalList');
+  const emptyEl = document.getElementById('valuesModalEmpty');
+  const f = activeFilters();
+  const params = new URLSearchParams({ field });
+  if (f.q) params.set('q', f.q);
+  if (f.event) params.set('event', f.event);
+  if (f.user) params.set('user', f.user);
+  if (f.source) params.set('source', f.source);
+  if (f.from) params.set('from', f.from);
+  if (f.to) params.set('to', f.to);
+  try {
+    const r = await fetch(`${apiBaseUrl()}/api/distinct-values?${params.toString()}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const vals = (data.values || []);
+    if (!vals.length) {
+      emptyEl.style.display = 'block';
+      return;
+    }
+    listEl.innerHTML = vals.map(v => `<li>${v}</li>`).join('');
+  } catch (_) {
+    emptyEl.style.display = 'block';
+  }
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -562,14 +717,21 @@ function activeFilters() {
     event: document.getElementById('filterEvent').value.trim(),
     user: document.getElementById('filterUser').value.trim(),
     source: document.getElementById('filterSrc').value.trim(),
+    from: inputToIso('filterFrom'),
+    to: inputToIso('filterTo'),
   };
 }
 
 function matchesActiveFilters(ev) {
   const f = activeFilters();
+  const evTs = Date.parse(String(ev.receivedAt || ev.time || '').replace(/\//g, '-')) || 0;
+  const fromTs = f.from ? (Date.parse(f.from) || 0) : 0;
+  const toTs = f.to ? (Date.parse(f.to) || 0) : 0;
   if (f.event && ev.event !== f.event) return false;
   if (f.user && ev.user !== f.user) return false;
   if (f.source && ev.source !== f.source) return false;
+  if (fromTs && evTs < fromTs) return false;
+  if (toTs && evTs > toTs) return false;
   if (f.q) {
     const h = [ev.ip,ev.user,ev.path,ev.event,ev.journal,ev.source].join(' ').toLowerCase();
     if (!h.includes(f.q.toLowerCase())) return false;
@@ -608,6 +770,8 @@ async function loadPage(page = 1) {
   if (f.event) params.set('event', f.event);
   if (f.user) params.set('user', f.user);
   if (f.source) params.set('source', f.source);
+  if (f.from) params.set('from', f.from);
+  if (f.to) params.set('to', f.to);
   params.set('sort', currentSort.col);
   params.set('dir', currentSort.dir === -1 ? 'desc' : 'asc');
 
@@ -631,6 +795,20 @@ async function loadPage(page = 1) {
 
 ['searchInput','filterEvent','filterUser','filterSrc'].forEach(id =>
   document.getElementById(id).addEventListener('input', () => { currentPage=1; loadPage(1); })
+);
+document.getElementById('filterPeriod').addEventListener('change', e => {
+  applyPeriodPreset(e.target.value);
+  currentPage = 1;
+  loadPage(1);
+});
+['filterFrom','filterTo'].forEach(id =>
+  document.getElementById(id).addEventListener('change', () => {
+    if (document.getElementById('filterPeriod').value !== 'custom') {
+      document.getElementById('filterPeriod').value = 'custom';
+    }
+    currentPage = 1;
+    loadPage(1);
+  })
 );
 
 function parseTs(s) { return s ? new Date(s.replace(/\//g,'-')).getTime()||0 : 0; }
@@ -726,6 +904,9 @@ function sortBy(col) {
 function resetFilters() {
   ['searchInput'].forEach(id=>document.getElementById(id).value='');
   ['filterEvent','filterUser','filterSrc'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('filterPeriod').value = '';
+  document.getElementById('filterFrom').value = '';
+  document.getElementById('filterTo').value = '';
   currentPage=1;
   if (filtersLoaded) loadPage(1);
 }
