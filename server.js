@@ -40,6 +40,15 @@ const CONFIG = {
   logFile:         process.env.LOG_FILE              || '',
 };
 
+function resolveAppPath(p) {
+  if (!p) return p;
+  return path.isAbsolute(p) ? p : path.resolve(__dirname, p);
+}
+
+CONFIG.pollCsvPath = resolveAppPath(CONFIG.pollCsvPath);
+CONFIG.dbPath = resolveAppPath(CONFIG.dbPath);
+CONFIG.logFile = resolveAppPath(CONFIG.logFile);
+
 // ─── ЛОГГЕР ──────────────────────────────────────────────────────────────────
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const curLevel = LEVELS[CONFIG.logLevel] ?? 1;
@@ -251,6 +260,7 @@ app.get('/api/status', auth, (req, res) => res.json({
     synologyHost: CONFIG.synologyHost, syslogPort: CONFIG.syslogPort,
     httpPort: CONFIG.httpPort, pollEnabled: CONFIG.pollEnabled,
     pollIntervalMs: CONFIG.pollIntervalMs, pollCsvPath: CONFIG.pollCsvPath,
+    dbEnabled: CONFIG.dbEnabled, dbPath: CONFIG.dbPath,
   },
 }));
 
@@ -442,7 +452,13 @@ server.listen(CONFIG.httpPort, () => {
 function shutdown(sig) {
   log('info', `${sig} получен, завершение...`);
   udpServer.close();
-  server.close(() => { log('info', 'Сервер остановлен'); process.exit(0); });
+  server.close(() => {
+    if (db) {
+      try { db.close(); } catch (_) {}
+    }
+    log('info', 'Сервер остановлен');
+    process.exit(0);
+  });
 }
 
 process.on('SIGINT',  () => shutdown('SIGINT'));
