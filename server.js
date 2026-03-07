@@ -298,6 +298,20 @@ app.get('/', (req, res) => {
 function parseSyslog(raw) {
   const str = raw.toString(CONFIG.pollCsvEncoding).trim();
   const m = re => { const r = str.match(re); return r ? r[1] : null; };
+  const mPath = () => {
+    const patterns = [
+      /(?:path|file|object|filename|folder|directory|dir)[=:\s]+"([^"]+)"/i,
+      /(?:path|file|object|filename|folder|directory|dir)[=:\s]+'([^']+)'/i,
+      /(?:path|file|object|filename|folder|directory|dir)[=:\s]+([^\s,;]+)/i,
+      /(?:файл|путь|объект|папка)[=:\s]+"([^"]+)"/i,
+      /(?:файл|путь|объект|папка)[=:\s]+([^\s,;]+)/i,
+    ];
+    for (const re of patterns) {
+      const r = str.match(re);
+      if (r && r[1]) return r[1];
+    }
+    return '';
+  };
   const ev = { journal: 'Syslog', raw: str, source: 'syslog' };
 
   ev.time     = m(/(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2})/)
@@ -305,7 +319,7 @@ function parseSyslog(raw) {
              || new Date().toISOString().slice(0, 19).replace('T', ' ');
   ev.user     = m(/user[=:\s]+([^\s,;"]+)/i)              || 'system';
   ev.ip       = m(/(?:ip|from)[=:\s]+([\d.]+)/i)          || '';
-  ev.path     = m(/(?:file|path|object)[=:\s]+([^\s,;"]+)/i) || '';
+  ev.path     = mPath();
   ev.event    = capitalize(m(/(?:action|event|op)[=:\s]+([^\s,;"]+)/i) || detectEvent(str));
   ev.size     = '';
   ev.filetype = ev.path ? (ev.path.includes('.') ? 'Файл' : 'Папка') : '';

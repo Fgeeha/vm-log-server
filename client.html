@@ -133,8 +133,8 @@
   .ip-chip { font-family:var(--mono); font-size:11px; color:var(--accent2); background:rgba(6,182,212,.08); border:1px solid rgba(6,182,212,.15); border-radius:6px; padding:2px 7px; }
   .user-chip { font-size:12px; color:var(--text); display:flex; align-items:center; gap:6px; }
   .avatar { width:22px;height:22px; border-radius:50%; background:linear-gradient(135deg,var(--accent),var(--accent2)); display:flex;align-items:center;justify-content:center; font-size:9px; font-weight:700; color:#fff; flex-shrink:0; }
-  .filepath { font-family:var(--mono); font-size:11px; color:var(--muted); max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .filepath:hover { color:var(--text); overflow:visible; white-space:normal; word-break:break-all; }
+  .filepath { font-family:var(--mono); font-size:11px; color:var(--muted); white-space:normal; word-break:break-all; }
+  .filepath:hover { color:var(--text); }
   .log-badge { font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:4px; font-weight:600; background:rgba(59,130,246,.1); color:var(--accent); border:1px solid rgba(59,130,246,.2); }
   .src-badge { font-family:var(--mono); font-size:9px; padding:1px 5px; border-radius:3px; }
   .src-badge.syslog { background:rgba(34,197,94,.1); color:#4ade80; border:1px solid rgba(34,197,94,.2); }
@@ -635,8 +635,7 @@ function renderPage() {
   tbody.innerHTML = page.map(r => {
     const isNew = newRowIds.has(r.id);
     if (isNew) setTimeout(() => newRowIds.delete(r.id), 900);
-    const fn = r.path ? r.path.split('/').pop() : '—';
-    const dir = r.path ? r.path.substring(0, r.path.lastIndexOf('/')+1) : '';
+    const fullPath = r.path || '—';
     return `<tr class="${isNew?'new-row':''}">
       <td><span class="log-badge">${hl(r.journal)}</span></td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${r.time||'—'}</td>
@@ -646,7 +645,7 @@ function renderPage() {
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${r.filetype||'—'}</td>
       <td style="font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap">${r.size||'—'}</td>
       <td>${srcBadge(r.source)}</td>
-      <td><div style="line-height:1.4"><div style="font-size:12px;font-weight:500;margin-bottom:2px">${fn}</div><div class="filepath" title="${r.path||''}">${dir}</div></div></td>
+      <td><div class="filepath" title="${fullPath}">${hl(fullPath)}</div></td>
     </tr>`;
   }).join('');
 
