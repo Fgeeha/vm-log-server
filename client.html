@@ -277,10 +277,10 @@
             <th onclick="sortBy('ip')" id="th-ip">IP ↕</th>
             <th onclick="sortBy('user')" id="th-user">Пользователь ↕</th>
             <th onclick="sortBy('event')" id="th-event">Событие ↕</th>
-            <th>Тип</th>
+            <th onclick="sortBy('filetype')" id="th-filetype">Тип ↕</th>
             <th onclick="sortBy('size')" id="th-size">Размер ↕</th>
-            <th>Источник</th>
-            <th>Путь / Файл</th>
+            <th onclick="sortBy('source')" id="th-source">Источник ↕</th>
+            <th onclick="sortBy('path')" id="th-path">Путь / Файл ↕</th>
           </tr>
         </thead>
         <tbody id="tableBody">
@@ -579,15 +579,6 @@ function matchesActiveFilters(ev) {
   return true;
 }
 
-function sortRows(rows) {
-  return [...rows].sort((a,b) => {
-    let va = currentSort.col==='time' ? (parseTs(a.time)||0) : (a[currentSort.col]||'');
-    let vb = currentSort.col==='time' ? (parseTs(b.time)||0) : (b[currentSort.col]||'');
-    if (currentSort.col==='size') { va=sizeBytes(String(va)); vb=sizeBytes(String(vb)); }
-    return va<vb ? -currentSort.dir : va>vb ? currentSort.dir : 0;
-  });
-}
-
 async function loadFilterOptions() {
   if (!(ws && ws.readyState === 1)) return;
   try {
@@ -619,6 +610,8 @@ async function loadPage(page = 1) {
   if (f.event) params.set('event', f.event);
   if (f.user) params.set('user', f.user);
   if (f.source) params.set('source', f.source);
+  params.set('sort', currentSort.col);
+  params.set('dir', currentSort.dir === -1 ? 'desc' : 'asc');
 
   try {
     const base = apiBaseUrl();
@@ -627,7 +620,7 @@ async function loadPage(page = 1) {
     const data = await r.json();
     currentPage = p;
     totalRows = Number(data.total || 0);
-    allData = sortRows(data.events || []);
+    allData = data.events || [];
     document.getElementById('shownCount').textContent = allData.length.toLocaleString('ru');
     document.getElementById('totalCount').textContent = totalRows.toLocaleString('ru');
     updateSummaryFromData();
@@ -728,8 +721,7 @@ function sortBy(col) {
   const th=document.getElementById('th-'+col);
   if(th){th.classList.add('sorted');th.textContent=th.textContent.replace(/ [↑↓↕]$/,'')+' '+(currentSort.dir===-1?'↓':'↑');}
   document.getElementById('sortInfo').textContent=col+' '+(currentSort.dir===-1?'↓':'↑');
-  allData = sortRows(allData);
-  renderPage();
+  loadPage(1);
 }
 
 function resetFilters() {

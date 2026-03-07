@@ -268,6 +268,21 @@ app.get('/api/events', auth, (req, res) => {
   const { user = '', event = '', ip = '', source = '', from = '', to = '', q = '' } = req.query;
   const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 500));
   const offset = Math.max(0, Number(req.query.offset || 0));
+  const sortMap = {
+    id: 'id',
+    journal: 'journal',
+    time: 'time',
+    ip: 'ip',
+    user: 'user',
+    event: 'event',
+    filetype: 'filetype',
+    size: 'size',
+    source: 'source',
+    path: 'path',
+    receivedAt: 'receivedAt',
+  };
+  const sortCol = sortMap[String(req.query.sort || 'time')] || 'time';
+  const sortDir = String(req.query.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
   if (db) {
     try {
@@ -297,11 +312,12 @@ app.get('/api/events', auth, (req, res) => {
       }
       const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
       const total = db.prepare(`SELECT COUNT(*) AS c FROM events ${whereSql}`).get(params).c;
+      const orderSql = `ORDER BY ${sortCol} ${sortDir}, id DESC`;
       const rows = db.prepare(`
         SELECT id, journal, time, ip, user, event, filetype, size, path, source, raw, receivedAt
         FROM events
         ${whereSql}
-        ORDER BY id DESC
+        ${orderSql}
         LIMIT @limit OFFSET @offset
       `).all({ ...params, limit, offset });
       return res.json({ total, returned: rows.length, events: rows });
@@ -319,8 +335,41 @@ app.get('/api/events', auth, (req, res) => {
   if (from)  r = r.filter(e => e.time  >= from);
   if (to)    r = r.filter(e => e.time  <= to);
   if (q)     r = r.filter(e => JSON.stringify(e).toLowerCase().includes(String(q).toLowerCase()));
+  const getField = (obj, field) => {
+    const v = obj[field];
+    return v == null ? '' : String(v);
+  };
+  r.sort((a, b) => {
+    let av = getField(a, sortCol);
+    let bv = getField(b, sortCol);
+    if (sortCol === 'id') {
+      av = Number(a.id || 0);
+      bv = Number(b.id || 0);
+    }
+    if (sortCol === 'size') {
+      const parseSize = s => {
+        const m = String(s).match(/([\d.]+)\s*(bytes?|kb|mb|gb|байт|кб|мб|гб)/i);
+        if (!m) return 0;
+        const v = parseFloat(m[1]);
+        const u = m[2].toLowerCase();
+        if (u.startsWith('k') || u.startsWith('к')) return v * 1024;
+        if (u.startsWith('m') || u.startsWith('м')) return v * 1024 * 1024;
+        if (u.startsWith('g') || u.startsWith('г')) return v * 1024 * 1024 * 1024;
+        return v;
+      };
+      av = parseSize(av);
+      bv = parseSize(bv);
+    }
+    if (sortCol === 'time' || sortCol === 'receivedAt') {
+      av = new Date(String(av).replace(/\//g, '-')).getTime() || 0;
+      bv = new Date(String(bv).replace(/\//g, '-')).getTime() || 0;
+    }
+    if (av < bv) return sortDir === 'ASC' ? -1 : 1;
+    if (av > bv) return sortDir === 'ASC' ? 1 : -1;
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
   const total = r.length;
-  r = r.reverse().slice(offset, offset + limit);
+  r = r.slice(offset, offset + limit);
   res.json({ total, returned: r.length, events: r });
 });
 
